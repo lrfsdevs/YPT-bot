@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master, dev]
+  pull_request:
+    branches: [master, dev]
+
+jobs:
+  quality-gates:
+    runs-on: ubuntu-latest
+    env:
+      # Placeholder URLs: test modules import PrismaClient at load time; the DB-backed
+      # tests are skipped via CI_SKIP_DB so no connection is ever made.
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      DIRECT_URL: postgresql://ci:ci@localhost:5432/ci
+      CI_SKIP_DB: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Schema migration guard
+        run: bash scripts/check-schema-migration.sh origin/master
+      - run: npm test
+      - run: npm run build
