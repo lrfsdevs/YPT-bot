@@ -1,3 +1,5 @@
+import { logger } from './logger.js';
+
 const BASE_URL = 'https://pi.tgclab.com';
 
 const DEFAULT_HEADERS = {
@@ -275,9 +277,13 @@ export async function getAggregatedMembers(token, groups) {
   let totalRawCount = 0;
   let successfulGroups = 0;
 
-  for (const res of results) {
+  for (let i = 0; i < results.length; i++) {
+    const res = results[i];
     if (res.status === 'rejected') {
-      console.warn(`⚠️ Warning: Failed to fetch group members: ${res.reason?.message || res.reason}`);
+      logger.warn('Failed to fetch group members.', {
+        groupId: groups[i]?.id,
+        reason: res.reason?.message || String(res.reason),
+      });
       continue;
     }
 

@@ -184,11 +184,18 @@ npm start
 
 To prevent timezone drift and misalignment across international participants:
 - All challenge date queries evaluate in UTC: `startAt <= nowUtc AND endAt >= nowUtc`.
-- All `logDate` records in `study_logs_v2` are normalized to UTC midnight:
+- Day buckets are **challenge-anchored**: a challenge day is derived from `Challenge.startAt` in UTC.
+  Day *N* spans `[startAt + N·24h, startAt + (N+1)·24h)`, and `logDate` is the UTC midnight of that
+  day's start (the `study_logs_v2.logDate` column is `@db.Date`):
   ```js
-  new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+  // computeChallengeDayLogDate(nowUtc, challenge.startAt)
+  const dayIndex = Math.max(0, Math.floor((nowUtc - startAt) / (24 * 60 * 60 * 1000)));
+  const bucketStart = new Date(startAt + dayIndex * 24 * 60 * 60 * 1000);
+  return new Date(Date.UTC(bucketStart.getUTCFullYear(), bucketStart.getUTCMonth(), bucketStart.getUTCDate(), 0, 0, 0, 0));
   ```
-- No local timezone offsets are applied to date bucket boundaries.
+  For a challenge starting at UTC midnight this equals the plain UTC calendar date; for a
+  non-midnight start the bucket follows the challenge start instant rather than the wall clock.
+- No local timezone offsets are applied to date bucket boundaries. YPT's own day boundary is ignored.
 
 ---
 

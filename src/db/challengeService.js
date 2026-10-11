@@ -1,5 +1,6 @@
 import { prisma } from '../db.js';
 import { env } from '../config/env.js';
+import { logger } from '../logger.js';
 
 /**
  * Dynamically resolves the active challenge from the database using strict UTC time.
@@ -17,7 +18,7 @@ export async function getActiveChallenge(nowUtc = new Date()) {
     if (explicit) {
       return explicit;
     }
-    console.warn(`⚠️ Configured ACTIVE_CHALLENGE_ID "${env.ACTIVE_CHALLENGE_ID}" not found. Falling back to dynamic query.`);
+    logger.warn('Configured ACTIVE_CHALLENGE_ID not found. Falling back to dynamic query.', { activeChallengeId: env.ACTIVE_CHALLENGE_ID });
   }
 
   // 2. Query the active challenge strictly in UTC time: startAt <= now <= endAt
@@ -39,7 +40,7 @@ export async function getActiveChallenge(nowUtc = new Date()) {
   });
 
   if (latest) {
-    console.warn(`ℹ️ No challenge currently active at UTC ${now.toISOString()}. Using latest challenge: "${latest.title}" (${latest.id}).`);
+    logger.warn('No challenge currently active. Using the latest challenge instead.', { nowUtc: now.toISOString(), challengeId: latest.id, challengeTitle: latest.title });
     return latest;
   }
 

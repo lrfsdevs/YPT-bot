@@ -1,10 +1,12 @@
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { prisma } from '../db.js';
 import { env } from '../config/env.js';
 import { clampDailyStudySeconds, cappedLiveStudyMs, MAX_DAILY_STUDY_SECONDS, MAX_CONTINUOUS_SESSION_MS } from '../config/limits.js';
 import { getActiveChallenge, getParticipantMap } from '../db/challengeService.js';
 import { signIn, splashLogin, getAggregatedMembers } from '../yptService.js';
+import { logger } from '../logger.js';
 
 /**
  * Normalizes any timestamp to a strict UTC midnight Date object (00:00:00.000Z)
@@ -14,6 +16,26 @@ import { signIn, splashLogin, getAggregatedMembers } from '../yptService.js';
 export function computeUtcLogDate(nowUtc = new Date()) {
   const d = new Date(nowUtc);
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+}
+
+export const CHALLENGE_DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Computes the challenge-anchored day bucket for a UTC instant.
+ * Day N spans [startAt + N*24h, startAt + (N+1)*24h); the returned Date is the
+ * UTC midnight of that bucket's calendar date (matching the @db.Date column).
+ * @param {Date|string|number} [nowUtc=new Date()]
+ * @param {Date|string|number} challengeStartAt
+ * @returns {Date}
+ */
+export function computeChallengeDayLogDate(nowUtc = new Date(), challengeStartAt) {
+  const now = new Date(nowUtc).getTime();
+  const start = new Date(challengeStartAt).getTime();
+  const dayIndex = Math.max(0, Math.floor((now - start) / CHALLENGE_DAY_MS));
+  const bucketStart = new Date(start + dayIndex * CHALLENGE_DAY_MS);
+  return new Date(Date.UTC(
+    bucketStart.getUTCFullYear(), bucketStart.getUTCMonth(), bucketStart.getUTCDate()
+  ));
 }
 
 /**
@@ -38,16 +60,16 @@ export function deriveStudyStatus(member) {
  * @param {string|number} groupId 
  * @param {Array<object>} members 
  * @param {Date} [nowUtc=new Date()]
+ * @param {import('winston').Logger} [log=logger]
  * @returns {Promise<object>}
  */
-export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUtc = new Date()) {
+export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUtc = new Date(), log = logger) {
   const startTime = Date.now();
-  const logDate = computeUtcLogDate(nowUtc);
 
   // 1. Resolve Active Challenge in UTC
   const challenge = await getActiveChallenge(nowUtc);
   if (!challenge) {
-    console.warn('⚠️ [Ingest] No challenge is active in database. Ingestion skipped.');
+    log.warn('No challenge is active in database. Ingestion skipped.');
     return {
       success: false,
       reason: 'NO_ACTIVE_CHALLENGE',
@@ -55,6 +77,9 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
       upsertedCount: 0,
     };
   }
+
+  // Challenge-anchored day bucket (derived from challenge start in UTC)
+  const logDate = computeChallengeDayLogDate(nowUtc, challenge.startAt);
 
   // 2. Resolve in-memory participant lookup table (yptId -> participantId)
   const participantMap = await getParticipantMap(challenge.id);
@@ -157,10 +182,18 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
   await Promise.all(upsertOperations);
 
   const durationMs = Date.now() - startTime;
-  console.log(
-    `✅ [Ingest] Challenge "${challenge.title}" (${challenge.id}) | Date: ${logDate.toISOString().slice(0, 10)} UTC: ` +
-    `${matchedCount} matched, ${upsertedCount} upserted, ${skippedOverrides} overrides protected, ${cappedCount} capped at 14h, ${sessionCappedCount} sessions capped at 4h, ${unlinkedCount} unlinked (${durationMs}ms)`
-  );
+  log.info('Ingest complete', {
+    challengeId: challenge.id,
+    challengeTitle: challenge.title,
+    logDate: logDate.toISOString().slice(0, 10),
+    matchedCount,
+    upsertedCount,
+    skippedOverrides,
+    cappedCount,
+    sessionCappedCount,
+    unlinkedCount,
+    durationMs,
+  });
 
   return {
     success: true,
@@ -183,8 +216,9 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
  */
 export async function runIngest() {
   const start = Date.now();
-  console.log(`[${new Date().toISOString()}] 🚀 Running YPT study logs ingestion...`);
-  
+  const run = logger.child({ runId: randomUUID(), trigger: 'runIngest' });
+  run.info('Running YPT study logs ingestion...');
+
   if (!env.YPT_EMAIL || !env.YPT_PASSWORD) {
     throw new Error('YPT_EMAIL and YPT_PASSWORD must be configured in .env');
   }
@@ -200,10 +234,14 @@ export async function runIngest() {
   const groups = groupIds.map((id) => ({ id, name: `Group ${id}` }));
   const aggregated = await getAggregatedMembers(auth.token, groups);
 
-  console.log(`📡 Fetched ${aggregated.members.length} unique members across ${aggregated.successfulGroups} groups.`);
-  const result = await ingestGroupMembersToDailyStudyLogs('aggregated', aggregated.members);
+  run.info('Fetched aggregated members.', {
+    members: aggregated.members.length,
+    successfulGroups: aggregated.successfulGroups,
+    groups: groups.length,
+  });
+  const result = await ingestGroupMembersToDailyStudyLogs('aggregated', aggregated.members, new Date(), run);
 
-  console.log(`🎉 Ingestion completed in ${((Date.now() - start) / 1000).toFixed(2)}s.`);
+  run.info('Ingestion cycle completed.', { durationMs: Date.now() - start });
   return result;
 }
 
@@ -215,7 +253,7 @@ if (isDirectExecution) {
   const intervalMinutes = loopArgIndex !== -1 ? parseInt(args[loopArgIndex + 1], 10) || 5 : 0;
 
   if (intervalMinutes > 0) {
-    console.log(`🔁 Ingest daemon started: Running every ${intervalMinutes} minute(s)...`);
+    logger.info('Ingest daemon started.', { intervalMinutes });
 
     // If deployed on Render Web Service (which requires an open HTTP port)
     if (process.env.PORT) {
@@ -226,20 +264,20 @@ if (isDirectExecution) {
           res.end(JSON.stringify({ status: 'ok', service: 'ingest-watch', intervalMinutes }));
         });
         server.listen(port, '0.0.0.0', () => {
-          console.log(`🌐 Health server listening on 0.0.0.0:${port} (Render compatible)`);
+          logger.info('Health server listening (Render compatible).', { host: '0.0.0.0', port });
         });
       });
     }
 
-    runIngest().catch((e) => console.error('❌ Ingest error:', e));
+    runIngest().catch((e) => logger.error('Ingest error', e));
     setInterval(() => {
-      runIngest().catch((e) => console.error('❌ Ingest error:', e));
+      runIngest().catch((e) => logger.error('Ingest error', e));
     }, intervalMinutes * 60 * 1000);
   } else {
     runIngest()
       .then(() => process.exit(0))
       .catch((err) => {
-        console.error('❌ Fatal error in runIngest:', err);
+        logger.error('Fatal error in runIngest', err);
         process.exit(1);
       });
   }

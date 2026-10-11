@@ -38,6 +38,10 @@ function parseIntFallback(val, fallback) {
  */
 export const env = Object.freeze({
   NODE_ENV: process.env.NODE_ENV || 'development',
+
+  // Logging
+  LOG_LEVEL: (process.env.LOG_LEVEL || 'info').toLowerCase(),
+  LOG_SILENT: String(process.env.LOG_SILENT || '').toLowerCase() === 'true',
   
   // Database (PostgreSQL - Supabase / Local)
   DATABASE_URL: process.env.DATABASE_URL || '',

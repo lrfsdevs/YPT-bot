@@ -59,7 +59,7 @@ describe('getGroupMembers session telemetry (raw, uncapped)', () => {
 
     assert.ok(Math.abs(m.sessionElapsedMs - HOUR_MS) < 2000, 'sessionElapsedMs should be ~1h');
     assert.strictEqual(m.liveStudyMs, 3600000 + m.sessionElapsedMs);
-    assert.strictEqual(m.liveStudyMs, 7200000);
+    assert.ok(Math.abs(m.liveStudyMs - 7200000) < 2000, 'liveStudyMs should be ~2h');
   });
 
   it('reports zero session elapsed when not studying', async () => {

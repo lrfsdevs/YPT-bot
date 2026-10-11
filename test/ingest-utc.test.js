@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert';
-import { computeUtcLogDate, deriveStudyStatus } from '../src/sync/ingestStudyLogs.js';
+import { computeUtcLogDate, computeChallengeDayLogDate, deriveStudyStatus } from '../src/sync/ingestStudyLogs.js';
 import { getActiveChallenge, getParticipantMap } from '../src/db/challengeService.js';
 import { prisma } from '../src/db.js';
 
@@ -22,6 +22,42 @@ describe('computeUtcLogDate (Strict UTC)', () => {
     const result = computeUtcLogDate(endOfYear);
 
     assert.strictEqual(result.toISOString(), '2026-12-31T00:00:00.000Z');
+  });
+});
+
+describe('computeChallengeDayLogDate (challenge-anchored bucket)', () => {
+  const iso = (d) => d.toISOString();
+
+  test('equals the UTC calendar date for a midnight-UTC challenge start', () => {
+    const start = new Date('2026-10-05T00:00:00.000Z');
+    assert.strictEqual(iso(computeChallengeDayLogDate(new Date('2026-10-05T23:59:59.999Z'), start)), '2026-10-05T00:00:00.000Z');
+    assert.strictEqual(iso(computeChallengeDayLogDate(new Date('2026-10-06T00:00:00.000Z'), start)), '2026-10-06T00:00:00.000Z');
+    assert.strictEqual(iso(computeChallengeDayLogDate(new Date('2026-10-10T12:00:00.000Z'), start)), '2026-10-10T00:00:00.000Z');
+  });
+
+  test('anchors to the start instant for a non-midnight challenge start', () => {
+    const start = new Date('2026-10-05T18:00:00.000Z');
+    assert.strictEqual(iso(computeChallengeDayLogDate(new Date('2026-10-06T10:00:00.000Z'), start)), '2026-10-05T00:00:00.000Z');
+    assert.strictEqual(iso(computeChallengeDayLogDate(new Date('2026-10-06T19:00:00.000Z'), start)), '2026-10-06T00:00:00.000Z');
+  });
+
+  test('rolls over exactly at startAt + N*24h', () => {
+    const start = new Date('2026-10-05T18:00:00.000Z');
+    assert.strictEqual(iso(computeChallengeDayLogDate(new Date('2026-10-06T17:59:59.999Z'), start)), '2026-10-05T00:00:00.000Z');
+    assert.strictEqual(iso(computeChallengeDayLogDate(new Date('2026-10-06T18:00:00.000Z'), start)), '2026-10-06T00:00:00.000Z');
+  });
+
+  test('keeps every instant within a 24h window in the same bucket', () => {
+    const start = new Date('2026-10-05T18:00:00.000Z');
+    const a = computeChallengeDayLogDate(new Date('2026-10-07T18:00:00.000Z'), start);
+    const b = computeChallengeDayLogDate(new Date('2026-10-08T17:59:00.000Z'), start);
+    assert.strictEqual(iso(a), '2026-10-07T00:00:00.000Z');
+    assert.strictEqual(iso(b), iso(a));
+  });
+
+  test('clamps instants before the challenge start to day 0', () => {
+    const start = new Date('2026-10-05T18:00:00.000Z');
+    assert.strictEqual(iso(computeChallengeDayLogDate(new Date('2026-10-05T00:00:00.000Z'), start)), '2026-10-05T00:00:00.000Z');
   });
 });
 
