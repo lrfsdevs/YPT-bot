@@ -1,5 +1,6 @@
 import express from 'express';
 import readline from 'node:readline';
+import { randomUUID } from 'node:crypto';
 import {
   signIn,
   splashLogin,
@@ -10,6 +11,7 @@ import {
 } from './yptService.js';
 import { ingestGroupMembersToDailyStudyLogs } from './sync/ingestStudyLogs.js';
 import { env } from './config/env.js';
+import { logger } from './logger.js';
 
 // Global state holding session and cached joined groups
 const state = {
@@ -61,8 +63,7 @@ async function promptCredentials() {
  */
 function displayJoinedGroups(groups) {
   if (!groups || groups.length === 0) {
-    console.log('\n⚠️  No joined groups found for this account.');
-    console.log('   Join a group on YPT, or use the join API to enter one.\n');
+    logger.warn('No joined groups found for this account. Join a group on YPT, or use the join API to enter one.');
     return;
   }
 
@@ -85,7 +86,7 @@ function displayJoinedGroups(groups) {
  */
 function displayGroupMembers(group, members) {
   if (!members || members.length === 0) {
-    console.log(`\n⚠️  No members found in "${group.name}".`);
+    logger.warn(`No members found in group "${group.name}".`, { groupId: group.id });
     return;
   }
 
@@ -117,7 +118,7 @@ function displayGroupMembers(group, members) {
  */
 function displayUnifiedMembers(members, totalGroupsCount = 1, duplicatesRemoved = 0) {
   if (!members || members.length === 0) {
-    console.log('\n⚠️  No members found across joined groups.');
+    logger.warn('No members found across joined groups.');
     return;
   }
 
@@ -160,34 +161,35 @@ async function startServer() {
     const { email, password } = await promptCredentials();
 
     if (!email || !password) {
-      console.error('❌ Error: Email and password cannot be empty.');
+      logger.error('Email and password cannot be empty.');
       process.exit(1);
     }
 
     // 2. Authenticate with YPT
-    console.log('\n🔐 Authenticating with YPT API...');
+    logger.info('Authenticating with YPT API...');
     const authResult = await signIn(email, password);
     state.token = authResult.token;
     state.user = authResult.user;
-    console.log(`✅ Logged in successfully as: ${state.user.nickname} (User ID: ${state.user.id})`);
+    logger.info('Logged in successfully.', { nickname: state.user.nickname, userId: state.user.id });
 
     // 3. Handshake session
     await splashLogin(state.token);
 
     // 4. Fetch and log joined groups
-    console.log('🔍 Fetching joined groups...');
+    logger.info('Fetching joined groups...');
     state.joinedGroups = await getJoinedGroups(state.token);
     displayJoinedGroups(state.joinedGroups);
 
     // 5. Fetch and log aggregated members across all joined groups in a single unified grid
     if (state.joinedGroups.length > 0) {
-      console.log(`\n⏳ Fetching & aggregating members across ${state.joinedGroups.length} group(s)...`);
+      const run = logger.child({ runId: randomUUID(), trigger: 'startup' });
+      run.info('Fetching & aggregating members across joined groups...', { groups: state.joinedGroups.length });
       try {
         const aggregated = await getAggregatedMembers(state.token, state.joinedGroups);
         displayUnifiedMembers(aggregated.members, aggregated.successfulGroups, aggregated.duplicatesRemoved);
-        await ingestGroupMembersToDailyStudyLogs('all', aggregated.members);
+        await ingestGroupMembersToDailyStudyLogs('all', aggregated.members, new Date(), run);
       } catch (err) {
-        console.error(`❌ Could not load or ingest aggregated members: ${err.message}`);
+        run.error('Could not load or ingest aggregated members', err);
       }
     }
 
@@ -195,9 +197,17 @@ async function startServer() {
     const app = express();
     app.use(express.json());
 
-    // Middleware: logger
+    // Middleware: structured HTTP access log (status + duration on response finish)
     app.use((req, res, next) => {
-      console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+      const startedAt = Date.now();
+      res.on('finish', () => {
+        logger.http('http_request', {
+          method: req.method,
+          url: req.originalUrl,
+          status: res.statusCode,
+          durationMs: Date.now() - startedAt,
+        });
+      });
       next();
     });
 
@@ -328,12 +338,14 @@ async function startServer() {
      * POST /sync - On-demand trigger to refresh YPT and ingest into DailyStudyLogV2
      */
     app.post('/sync', async (req, res) => {
+      const run = logger.child({ runId: randomUUID(), trigger: 'POST /sync' });
       try {
-        console.log('⚡ Manual sync requested via POST /sync');
+        run.info('Manual sync requested');
         const aggregated = await getAggregatedMembers(state.token, state.joinedGroups);
-        const result = await ingestGroupMembersToDailyStudyLogs('all', aggregated.members);
+        const result = await ingestGroupMembersToDailyStudyLogs('all', aggregated.members, new Date(), run);
         res.json({ success: true, ...result });
       } catch (err) {
+        run.error('Manual sync failed', err);
         res.status(500).json({ success: false, error: err.message });
       }
     });
@@ -352,23 +364,22 @@ async function startServer() {
       // 7. Automatic periodic background logger & database syncer (every 5 minutes by default)
       const intervalMinutes = parseInt(process.env.REFRESH_INTERVAL_MINUTES || '5', 10);
       if (intervalMinutes > 0 && state.joinedGroups.length > 0) {
-        console.log(`⏱️  Auto-logger active: Refreshing & logging study hours every ${intervalMinutes} minute(s).\n`);
+        logger.info('Auto-logger active: refreshing & logging study hours on an interval.', { intervalMinutes });
         setInterval(async () => {
-          console.log(`\n======================================================`);
-          console.log(`[${new Date().toLocaleTimeString()}] ⏰ Periodic Update (${intervalMinutes}m): Unified Members & Study Hours`);
-          console.log(`======================================================`);
+          const run = logger.child({ runId: randomUUID(), trigger: 'scheduled' });
+          run.info('Periodic update: unified members & study hours');
           try {
             const aggregated = await getAggregatedMembers(state.token, state.joinedGroups);
             displayUnifiedMembers(aggregated.members, aggregated.successfulGroups, aggregated.duplicatesRemoved);
-            await ingestGroupMembersToDailyStudyLogs('all', aggregated.members);
+            await ingestGroupMembersToDailyStudyLogs('all', aggregated.members, new Date(), run);
           } catch (err) {
-            console.error(`❌ Hourly update error: ${err.message}`);
+            run.error('Periodic update error', err);
           }
         }, intervalMinutes * 60 * 1000);
       }
     });
   } catch (error) {
-    console.error(`\n❌ Initialization Error: ${error.message}`);
+    logger.error('Initialization error', error);
     process.exit(1);
   }
 }

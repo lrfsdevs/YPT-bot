@@ -1,11 +1,13 @@
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { prisma } from '../db.js';
 import { env } from '../config/env.js';
 import { clampDailyStudySeconds, cappedLiveStudyMs, MAX_DAILY_STUDY_SECONDS, MAX_CONTINUOUS_SESSION_MS } from '../config/limits.js';
 import { getActiveChallenge, getParticipantMap } from '../db/challengeService.js';
-import { computeUtcLogDate, deriveStudyStatus } from './ingestStudyLogs.js';
+import { computeUtcLogDate, computeChallengeDayLogDate, deriveStudyStatus } from './ingestStudyLogs.js';
 import { signIn, splashLogin, getAggregatedMembers } from '../yptService.js';
+import { logger } from '../logger.js';
 
 /**
  * Normalizes a date to YYYY-MM-DD string in UTC.
@@ -43,25 +45,27 @@ export async function syncChallengeFromMonday(options = {}) {
     verbose = true,
   } = options;
 
-  const log = (...args) => {
-    if (verbose) console.log(...args);
-  };
-
   const startTime = Date.now();
-  const todayUtc = computeUtcLogDate(nowUtc);
 
   // 1. Resolve Active Challenge
   const challenge = await getActiveChallenge(nowUtc);
   if (!challenge) {
-    console.warn('⚠️ [ChallengeSync] No active challenge found in database for date:', nowUtc.toISOString());
+    logger.warn('No active challenge found in database.', { nowUtc: nowUtc.toISOString() });
     return {
       success: false,
       reason: 'NO_ACTIVE_CHALLENGE',
     };
   }
 
+  const run = logger.child({ runId: randomUUID(), challengeId: challenge.id, trigger: 'challenge_sync' });
+  const log = (...args) => {
+    if (verbose) run.info(args.join(' '));
+  };
+
   const challengeStartUtc = computeUtcLogDate(challenge.startAt);
   const challengeEndUtc = computeUtcLogDate(challenge.endAt);
+  // Challenge-anchored day bucket (derived from challenge start in UTC)
+  const todayUtc = computeChallengeDayLogDate(nowUtc, challenge.startAt);
 
   log(`🏁 [ChallengeSync] Active Challenge: "${challenge.title}" (${challenge.id})`);
   log(`📅 [ChallengeSync] Challenge Window (UTC): ${formatUtcDateString(challengeStartUtc)} to ${formatUtcDateString(challengeEndUtc)}`);
@@ -249,7 +253,7 @@ export async function syncChallengeFromMonday(options = {}) {
 
       log(`✅ [Phase 2 Complete] Matched ${liveMatched} participants, upserted ${liveUpserted} live logs (${liveOverridesSkipped} overrides protected, ${liveCapped} capped at 14h, ${liveSessionCapped} sessions capped at 4h).`);
     } catch (err) {
-      console.error('❌ [Phase 2 Error] Failed to scrape live YPT data:', err.message);
+      run.error('Failed to scrape live YPT data', err);
     }
   }
 
@@ -311,7 +315,7 @@ if (isDirectExecution) {
   syncChallengeFromMonday()
     .then(() => process.exit(0))
     .catch((err) => {
-      console.error('❌ Fatal error in challenge_sync:', err);
+      logger.error('Fatal error in challenge_sync', err);
       process.exit(1);
     });
 }

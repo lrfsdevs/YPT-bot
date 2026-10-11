@@ -124,6 +124,7 @@ model DailyStudyLogV2 {
   isOverride     Boolean @default(false)
   overrideById   String?
   overrideReason String?
+  isLeave        Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

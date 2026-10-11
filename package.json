@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "build": "prisma generate",
-    "test": "node --test",
+    "test": "LOG_SILENT=true node --test",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
     "prisma:migrate": "prisma migrate dev",
@@ -19,7 +19,8 @@
   "dependencies": {
     "@prisma/client": "^6.8.2",
     "dotenv": "^16.6.1",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "winston": "^3.19.0"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -3,7 +3,6 @@ import assert from 'node:assert';
 import { formatUtcDateString, syncChallengeFromMonday } from '../src/sync/challenge_sync.js';
 import { prisma } from '../src/db.js';
 import { getActiveChallenge } from '../src/db/challengeService.js';
-import { computeUtcLogDate } from '../src/sync/ingestStudyLogs.js';
 
 describe('formatUtcDateString', () => {
   test('formats dates strictly in YYYY-MM-DD UTC format', () => {
