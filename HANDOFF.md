@@ -1,5 +1,54 @@
 # HANDOFF
 
+## 2026-10-12 — Challenge lifecycle, locking (resultsLockedAt), Day 7 grace window, auto-locking + audit log, and opt-in fallback
+
+### What changed
+- **`src/db/challengeService.js`**:
+  - Added `CHALLENGE_GRACE_WINDOW_MS = 6 * 60 * 60 * 1000` (6 hours).
+  - Added `getChallengeLifecycle(challenge, nowUtc)` returning lifecycle states:
+    - `LOCKED`: `challenge.resultsLockedAt <= now` (logging prohibited).
+    - `UPCOMING`: `now < challenge.startAt` (logging prohibited).
+    - `ACTIVE`: `startAt <= now <= endAt` and not locked (normal logging).
+    - `DAY7_GRACE`: `endAt < now <= endAt + 6h` and not locked (Day 7 grace window).
+    - `EXPIRED`: `now > endAt + 6h` (logging prohibited).
+  - Added `lockExpiredChallengesAfterGrace(nowUtc, log)`:
+    - Automatically finds challenges where `endAt <= now - 6h` and `resultsLockedAt == null`.
+    - Atomically updates `resultsLockedAt = nowUtc`.
+    - Creates an immutable system `AuditLog` entry with `actionType: 'CHALLENGE_LOCKED'`, `auditReason: 'challenge locked after 6 hr grace hours'`, and `newValue: { resultsLockedAt: now.toISOString(), title: 'challenge locked after 6 hr grace hours', autoLocked: true }`.
+  - Made fallback to ended challenge opt-in via `{ allowFallback = false }`. Default query only returns active/grace challenges where `resultsLockedAt` is null or in the future and within the 6h grace window.
+- **`src/sync/ingestStudyLogs.js`**:
+  - Automatically calls `lockExpiredChallengesAfterGrace()` at the beginning of `runIngest()` and `ingestGroupMembersToDailyStudyLogs()`.
+  - `runIngest()` checks active challenge early; if no challenge is active/ingestable, skips YPT login and scraping.
+  - `ingestGroupMembersToDailyStudyLogs()`:
+    - If in `DAY7_GRACE`, target day bucket is locked to **Day 7** (`day7End - 1000ms`).
+    - Session filtering during Day 7 grace:
+      - **Old sessions** (`member.isStudying && member.sessionStartMs < day7End`): continue accumulating time and update Day 7 duration.
+      - **Completed old sessions** (`wasStudyingOldSession && !member.isStudying`): finalized to Day 7 and marked `OFFLINE`.
+      - **New sessions** (`member.sessionStartMs >= day7End`): ignored, Day 7 duration is kept unchanged, status set to `OFFLINE`.
+- **`src/sync/challenge_sync.js`**:
+  - Added `allowFallback = false` option and `--fallback` CLI argument.
+- **`test/challenge-lifecycle.test.js`**:
+  - Added 22 unit, integration, and E2E simulation tests covering:
+    - Lifecycle state transitions and boundaries (`UPCOMING`, `ACTIVE`, `DAY7_GRACE`, `EXPIRED`, `LOCKED`).
+    - Day 7 grace period session filtering (accumulating old sessions, finalizing offline transitions, rejecting new sessions).
+    - Dynamic DB active query resolution and opt-in fallback behavior.
+    - End-to-end ingestion simulation with mocked DB state.
+    - `lockExpiredChallengesAfterGrace()` execution, system `AuditLog` creation, and idempotency.
+- **`doc.md`**:
+  - Updated §6 with Challenge Lifecycle States, Day 7 grace rules, and auto-locking + AuditLog behavior.
+  - Updated §8 with new test counts and coverage areas.
+
+### DB apply step
+- Missing migrations and schema updates were provided and verified via `scripts/check-schema-migration.sh dev`. `resultsLockedAt` column already exists in PostgreSQL database.
+- Audit logs use existing `AuditLog` table (`audit_logs`) and conform strictly to schema constraints.
+
+### Verification
+- `npm test` → **57 pass / 0 fail** across 18 test suites.
+- `CI_SKIP_DB=true DATABASE_URL=... npm test` → **50 pass / 0 fail** (DB suites skipped in CI mode).
+- `scripts/check-schema-migration.sh dev` → **OK: schema/migration guard passed**.
+
+---
+
 ## 2026-10-11 — CI schema-migration guard + quality gates
 
 ### What changed
