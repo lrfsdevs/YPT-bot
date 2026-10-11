@@ -89,7 +89,7 @@ describe('deriveStudyStatus', () => {
   });
 });
 
-describe('Database Active Challenge & Participant Resolution (UTC)', () => {
+describe('Database Active Challenge & Participant Resolution (UTC)', { skip: process.env.CI_SKIP_DB === 'true' }, () => {
   test('dynamically finds active challenge within date range in UTC', async () => {
     // October Team Battle is 2026-10-05T00:00:00Z to 2026-10-12T00:00:00Z
     const testUtcTime = new Date('2026-10-08T12:00:00.000Z');

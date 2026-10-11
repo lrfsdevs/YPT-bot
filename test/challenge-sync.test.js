@@ -11,7 +11,7 @@ describe('formatUtcDateString', () => {
   });
 });
 
-describe('syncChallengeFromMonday', () => {
+describe('syncChallengeFromMonday', { skip: process.env.CI_SKIP_DB === 'true' }, () => {
   test('syncs historical days from Monday (2026-10-05) into study_logs_v2 with override preservation', async () => {
     const testNow = new Date('2026-10-10T12:00:00.000Z');
     const result = await syncChallengeFromMonday({

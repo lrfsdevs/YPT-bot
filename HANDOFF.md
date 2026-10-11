@@ -1,5 +1,42 @@
 # HANDOFF
 
+## 2026-10-11 — CI schema-migration guard + quality gates
+
+### What changed
+- **New `scripts/check-schema-migration.sh [base]`** (default `origin/master`): fails if
+  `prisma/schema.prisma` changed vs the base ref and nothing under `prisma/migrations/` changed.
+  Message tells you to add `prisma/migrations/<timestamp>_<name>/migration.sql` and record the DB
+  apply step in HANDOFF.md.
+- **New `.github/workflows/ci.yml`**: on push/PR to `master` + `dev` (Node 22, `fetch-depth: 0`),
+  runs schema guard → `npm test` → `npm run build`.
+- **DB-backed suites skip in CI** via `{ skip: process.env.CI_SKIP_DB === 'true' }`
+  (`test/ingest-utc.test.js` "Database …" block, `test/challenge-sync.test.js`). The workflow sets
+  placeholder `DATABASE_URL`/`DIRECT_URL` so `PrismaClient` can still be imported; no connection is made.
+- **`AGENTS.md`**: added the rule that `prisma/schema.prisma` changes must ship with a migration.
+- **New migration** `prisma/migrations/20261011000000_add_is_leave_to_study_logs_v2/migration.sql`:
+  `ALTER TABLE "study_logs_v2" ADD COLUMN IF NOT EXISTS "isLeave" boolean NOT NULL DEFAULT false;`
+
+### DB apply step
+- The `isLeave` migration is a **no-op in production** (the column already exists; `IF NOT EXISTS`).
+  Apply via `prisma migrate deploy` or the raw SQL where a DB lacks it. Nothing in the build pipeline
+  syncs the schema — apply manually.
+
+### Verification
+- Guard paths verified in a throwaway repo: pass (no schema change), fail (schema change w/o
+  migration), pass (with migration), and a clear error for a missing base ref.
+- The guard currently **fails on `dev`** because commit `303bbbf` changed `prisma/schema.prisma`
+  with no migration — expected; it passes once this migration commit lands in the branch range.
+- `CI_SKIP_DB=true DATABASE_URL=… npm test` → 32 pass / 0 fail, DB suites `SKIP`.
+- `npm run build` → exit 0 with the placeholder env.
+
+### Open / follow-ups
+- Live drift detection (`prisma/schema.prisma` vs the actual DB) is **not** implemented — would need a
+  DB secret in Actions.
+- Commit `303bbbf` (winston logging + day buckets) is on `dev` ahead of `master`; open a PR to `master`
+  when ready (the guard will require this migration to be included).
+
+---
+
 ## 2026-10-11 — Centralized winston logging (for incident diagnosis)
 
 ### What changed
@@ -74,8 +111,9 @@ Requested follow-up (this change): **ignore the YPT day; use the product's day b
   previous UTC calendar date for all sampled instants → **no data migration/backfill needed**.
 
 ### Open items / next steps
-- **Not done:** monotonic/zero-overwrite guard (a 0 YPT sample can still overwrite a day's value).
-  Recommended for a follow-up.
+- **Rejected (2026-10-11):** monotonic/zero-overwrite guard. A `max(existing, incoming)` write would
+  also block legitimate downward corrections (e.g. a user removing hours in YPT). Do not re-add it
+  unless real decreases can be distinguished from glitchy `0` samples.
 - Minor data inconsistency (flagged, not fixed): 3 rows in `study_logs_v2` still have
   `status='Offline'` (wrong casing; 2026-10-09). Normalize to `'OFFLINE'` if desired.
 - **Done (2026-10-11):** fixed the flaky `test/session-cap.test.js` exact-ms assertion — the "~2h"
