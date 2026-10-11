@@ -180,10 +180,29 @@ npm start
 
 ---
 
-## 6. Strict UTC Time Guarantee
+## 6. Strict UTC Time Guarantee & Challenge Lifecycle
 
 To prevent timezone drift and misalignment across international participants:
-- All challenge date queries evaluate in UTC: `startAt <= nowUtc AND endAt >= nowUtc`.
+- All challenge queries evaluate in strict UTC time using `getChallengeLifecycle(challenge, nowUtc)`.
+- **Challenge Lifecycle States**:
+  - `LOCKED`: When `resultsLockedAt` is set on the `Challenge` and has passed, logging is immediately prohibited across all entry points.
+  - `UPCOMING`: Before `startAt`, ingestion is prohibited.
+  - `ACTIVE`: During `[startAt, endAt]` and while not locked, real-time ingestion occurs every 5 minutes.
+  - `DAY7_GRACE`: A 6-hour grace window spanning `(endAt, endAt + 6h]` following Day 7 completion (unless locked earlier):
+    - Target bucket is locked to **Day 7** (`computeChallengeDayLogDate(day7End - 1000, challenge.startAt)`).
+    - **Old Sessions Allowed**: In-progress sessions that began before Day 7 completion (`sessionStartMs < day7End`) continue to accumulate and finalize upon going offline.
+    - **New Sessions Rejected**: Any session started on or after Day 7 completion (`sessionStartMs >= day7End`) is ignored and will not increase Day 7 study duration (status marked `OFFLINE`).
+  - `EXPIRED`: Past `endAt + 6h`, all automated ingestion stops.
+- **Automatic Challenge Locking & Audit Log**:
+  - `lockExpiredChallengesAfterGrace(nowUtc, log)` runs automatically at the beginning of ingestion cycles (`runIngest`, `ingestGroupMembersToDailyStudyLogs`, and `getActiveChallenge`).
+  - Any challenge past `endAt + 6h` with `resultsLockedAt == null` is atomically locked (`resultsLockedAt = nowUtc`).
+  - An immutable system `AuditLog` is created:
+    - `actionType`: `'CHALLENGE_LOCKED'`
+    - `auditReason`: `'challenge locked after 6 hr grace hours'`
+    - `targetEntityType`: `'CHALLENGE'`
+    - `newValue`: `{ resultsLockedAt, title: 'challenge locked after 6 hr grace hours', autoLocked: true }`
+    - `actorUsername`: `'system'`, `actorDisplayName`: `'YPT Auto-Lock'`
+  - Atomic conditional updates ensure idempotency across concurrent sync executions.
 - Day buckets are **challenge-anchored**: a challenge day is derived from `Challenge.startAt` in UTC.
   Day *N* spans `[startAt + N·24h, startAt + (N+1)·24h)`, and `logDate` is the UTC midnight of that
   day's start (the `study_logs_v2.logDate` column is `@db.Date`):
@@ -214,11 +233,14 @@ Run the full automated test suite:
 npm test
 ```
 
-All 12 tests across 6 test suites validate:
+All 57 tests across 18 test suites validate:
 - Multi-group member aggregation and duplicate removal.
 - Fault tolerance when individual groups return errors.
 - Strict UTC date normalization and rollover safety.
 - Status derivation (`STUDYING` when studying/paused, `OFFLINE` when inactive).
+- Challenge lifecycle transitions (`UPCOMING`, `ACTIVE`, `DAY7_GRACE`, `EXPIRED`, `LOCKED`).
+- Day 7 grace period session filtering (old sessions accumulate, finalized on offline, new sessions rejected).
+- Automatic challenge locking after 6-hour grace window and system `AuditLog` creation.
 - Dynamic UTC challenge and participant resolution.
 - Historical Monday backfill, override preservation, and idempotency.
 

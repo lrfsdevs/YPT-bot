@@ -43,12 +43,13 @@ export async function syncChallengeFromMonday(options = {}) {
     nowUtc = new Date(),
     skipYpt = false,
     verbose = true,
+    allowFallback = false,
   } = options;
 
   const startTime = Date.now();
 
   // 1. Resolve Active Challenge
-  const challenge = await getActiveChallenge(nowUtc);
+  const challenge = await getActiveChallenge(nowUtc, { allowFallback });
   if (!challenge) {
     logger.warn('No active challenge found in database.', { nowUtc: nowUtc.toISOString() });
     return {
@@ -324,7 +325,8 @@ export async function syncChallengeFromMonday(options = {}) {
 // Auto-run when executed directly via CLI
 const isDirectExecution = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isDirectExecution) {
-  syncChallengeFromMonday()
+  const allowFallback = process.argv.includes('--fallback');
+  syncChallengeFromMonday({ allowFallback })
     .then(() => process.exit(0))
     .catch((err) => {
       logger.error('Fatal error in challenge_sync', err);

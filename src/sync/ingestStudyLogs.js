@@ -4,7 +4,12 @@ import { randomUUID } from 'node:crypto';
 import { prisma } from '../db.js';
 import { env } from '../config/env.js';
 import { clampDailyStudySeconds, cappedLiveStudyMs, MAX_DAILY_STUDY_SECONDS, MAX_CONTINUOUS_SESSION_MS } from '../config/limits.js';
-import { getActiveChallenge, getParticipantMap } from '../db/challengeService.js';
+import {
+  getActiveChallenge,
+  getParticipantMap,
+  getChallengeLifecycle,
+  lockExpiredChallengesAfterGrace,
+} from '../db/challengeService.js';
 import { signIn, splashLogin, getAggregatedMembers } from '../yptService.js';
 import { logger } from '../logger.js';
 
@@ -66,6 +71,9 @@ export function deriveStudyStatus(member) {
 export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUtc = new Date(), log = logger) {
   const startTime = Date.now();
 
+  // 0. Auto-lock any challenges whose 6-hour grace window has expired
+  await lockExpiredChallengesAfterGrace(nowUtc, log);
+
   // 1. Resolve Active Challenge in UTC
   const challenge = await getActiveChallenge(nowUtc);
   if (!challenge) {
@@ -78,8 +86,22 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
     };
   }
 
+  const lifecycle = challenge.lifecycle || getChallengeLifecycle(challenge, nowUtc);
+  if (!lifecycle.canIngest) {
+    log.warn(`Challenge "${challenge.title}" cannot be ingested (state: ${lifecycle.state}). Ingestion skipped.`);
+    return {
+      success: false,
+      reason: `CHALLENGE_${lifecycle.state}`,
+      matchedCount: 0,
+      upsertedCount: 0,
+    };
+  }
+
   // Challenge-anchored day bucket (derived from challenge start in UTC)
-  const logDate = computeChallengeDayLogDate(nowUtc, challenge.startAt);
+  // During Day 7 grace period, lock target bucket to Day 7 (1 second prior to day7End)
+  const logDate = lifecycle.isGracePeriod
+    ? computeChallengeDayLogDate(new Date(lifecycle.day7End.getTime() - 1000), challenge.startAt)
+    : computeChallengeDayLogDate(nowUtc, challenge.startAt);
 
   // 2. Resolve in-memory participant lookup table (yptId -> participantId)
   const participantMap = await getParticipantMap(challenge.id);
@@ -94,8 +116,9 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
     select: {
       id: true,
       participantId: true,
-      isOverride: true,
       durationSeconds: true,
+      status: true,
+      isOverride: true,
     },
   });
   const existingMap = new Map(existingRecords.map((r) => [r.participantId, r]));
@@ -127,23 +150,65 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
 
     matchedCount++;
 
-    // Calculate real-time integer seconds using liveStudyMs to capture ongoing active timer elapsed time
-    // Continuous sessions are capped at 4h before the daily 14h clamp is applied.
-    const cappedLiveMs = cappedLiveStudyMs(member.todayStudyMs, member.sessionElapsedMs);
-    const studyMs = Math.max(
-      cappedLiveMs,
-      Number(member.todayStudyMs || 0),
-      Number(member.studyMs || 0)
-    );
-    const rawSeconds = Math.floor(studyMs / 1000);
-    const durationSeconds = clampDailyStudySeconds(rawSeconds);
-    if (rawSeconds > MAX_DAILY_STUDY_SECONDS) cappedCount++;
-    if (Number(member.sessionElapsedMs || 0) > MAX_CONTINUOUS_SESSION_MS) sessionCappedCount++;
-    const status = deriveStudyStatus(member);
+    const existing = existingMap.get(participant.participantId);
+
+    let durationSeconds;
+    let status;
+
+    if (lifecycle.isGracePeriod) {
+      // Day 7 Completion 6-hour Grace Period Rules:
+      // - No new sessions of YPT are logged (sessionStartMs >= day7End).
+      // - Only old sessions (in-progress sessions started before Day 7 completion) continue to accumulate.
+      // - When an in-progress old session completes, its final study duration is recorded to Day 7 and marked OFFLINE.
+      const isStudying = Boolean(member.isStudying);
+      const sessionStartMs = member.sessionStartMs ? Number(member.sessionStartMs) : null;
+      const day7EndMs = lifecycle.day7End.getTime();
+
+      const isOldSession = isStudying && sessionStartMs !== null && sessionStartMs < day7EndMs;
+      const wasStudyingOldSession = existing?.status === 'STUDYING';
+
+      if (isOldSession) {
+        // Accumulate active old session
+        const cappedLiveMs = cappedLiveStudyMs(member.todayStudyMs, member.sessionElapsedMs);
+        const studyMs = Math.max(
+          cappedLiveMs,
+          Number(member.todayStudyMs || 0),
+          Number(member.studyMs || 0)
+        );
+        const rawSeconds = Math.floor(studyMs / 1000);
+        durationSeconds = clampDailyStudySeconds(rawSeconds);
+        if (rawSeconds > MAX_DAILY_STUDY_SECONDS) cappedCount++;
+        if (Number(member.sessionElapsedMs || 0) > MAX_CONTINUOUS_SESSION_MS) sessionCappedCount++;
+        status = deriveStudyStatus(member);
+      } else if (wasStudyingOldSession && !isStudying) {
+        // Completed old session finalized
+        const rawSeconds = Math.floor(Number(member.todayStudyMs || member.studyMs || 0) / 1000);
+        const finalizedSeconds = clampDailyStudySeconds(rawSeconds);
+        durationSeconds = Math.max(existing?.durationSeconds || 0, finalizedSeconds);
+        status = 'OFFLINE';
+      } else {
+        // New session started after Day 7 or offline without pending old session: DO NOT LOG NEW SESSIONS
+        durationSeconds = existing ? existing.durationSeconds : 0;
+        status = 'OFFLINE';
+      }
+    } else {
+      // Normal active challenge day: calculate real-time integer seconds
+      // Continuous sessions are capped at 4h before the daily 14h clamp is applied.
+      const cappedLiveMs = cappedLiveStudyMs(member.todayStudyMs, member.sessionElapsedMs);
+      const studyMs = Math.max(
+        cappedLiveMs,
+        Number(member.todayStudyMs || 0),
+        Number(member.studyMs || 0)
+      );
+      const rawSeconds = Math.floor(studyMs / 1000);
+      durationSeconds = clampDailyStudySeconds(rawSeconds);
+      if (rawSeconds > MAX_DAILY_STUDY_SECONDS) cappedCount++;
+      if (Number(member.sessionElapsedMs || 0) > MAX_CONTINUOUS_SESSION_MS) sessionCappedCount++;
+      status = deriveStudyStatus(member);
+    }
 
     // 4. Admin Override Safety (Law L5)
     // Check if an existing row has isOverride: true. If so, do not overwrite durationSeconds.
-    const existing = existingMap.get(participant.participantId);
 
     if (existing?.isOverride) {
       skippedOverrides++;
@@ -158,10 +223,11 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
     }
 
     // 5. Zero-Drop & Rollover Glitch Guard
-    // - If YPT has already rolled over to a future day (member.studyDate > targetLogDateStr),
-    //   incoming telemetry belongs to tomorrow; preserve today's completed study duration.
+    // - If YPT has already rolled over to a future day (member.studyDate > targetLogDateStr)
+    //   during normal challenge days (!lifecycle.isGracePeriod), incoming telemetry belongs to
+    //   tomorrow; preserve today's completed study duration.
     // - If incoming duration is 0 but existing record has durationSeconds > 0, preserve existing duration.
-    const isFutureYptDate = Boolean(member.studyDate && member.studyDate > targetLogDateStr);
+    const isFutureYptDate = !lifecycle.isGracePeriod && Boolean(member.studyDate && member.studyDate > targetLogDateStr);
     const isZeroDrop = Boolean(durationSeconds === 0 && existing && existing.durationSeconds > 0);
 
     let finalDurationSeconds = durationSeconds;
@@ -265,6 +331,32 @@ export async function runIngest() {
   const start = Date.now();
   const run = logger.child({ runId: randomUUID(), trigger: 'runIngest' });
   run.info('Running YPT study logs ingestion...');
+
+  // Auto-lock any challenges whose 6-hour grace window has expired
+  await lockExpiredChallengesAfterGrace(new Date(), run);
+
+  // Early check: if no challenge is running or eligible, skip YPT login and scraping
+  const challenge = await getActiveChallenge();
+  if (!challenge) {
+    run.warn('No challenge is active in database. Ingestion skipped.');
+    return {
+      success: false,
+      reason: 'NO_ACTIVE_CHALLENGE',
+      matchedCount: 0,
+      upsertedCount: 0,
+    };
+  }
+
+  const lifecycle = challenge.lifecycle || getChallengeLifecycle(challenge);
+  if (!lifecycle.canIngest) {
+    run.warn(`Challenge "${challenge.title}" cannot be ingested (state: ${lifecycle.state}). Ingestion skipped.`);
+    return {
+      success: false,
+      reason: `CHALLENGE_${lifecycle.state}`,
+      matchedCount: 0,
+      upsertedCount: 0,
+    };
+  }
 
   if (!env.YPT_EMAIL || !env.YPT_PASSWORD) {
     throw new Error('YPT_EMAIL and YPT_PASSWORD must be configured in .env');

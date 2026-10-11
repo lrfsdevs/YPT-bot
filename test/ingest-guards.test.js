@@ -89,17 +89,27 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
     const originalFindMany = prisma.dailyStudyLogV2.findMany;
     const originalUpsert = prisma.dailyStudyLogV2.upsert;
     const originalChallenge = prisma.challenge.findFirst;
+    const originalChallengeFindMany = prisma.challenge.findMany;
     const originalParticipants = prisma.challengeParticipant.findMany;
 
     let upsertArgs = null;
 
     try {
-      prisma.challenge.findFirst = async () => ({
+      const mockChallenge = {
         id: 'mock-challenge-id',
         title: 'Mock Challenge',
         startAt: new Date('2026-10-05T00:00:00.000Z'),
         endAt: new Date('2026-10-12T00:00:00.000Z'),
-      });
+        resultsLockedAt: null,
+      };
+
+      prisma.challenge.findFirst = async () => mockChallenge;
+      prisma.challenge.findMany = async (args) => {
+        if (args?.where?.endAt?.lte) {
+          return [];
+        }
+        return [mockChallenge];
+      };
 
       prisma.challengeParticipant.findMany = async () => [
         {
@@ -146,6 +156,7 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
       assert.strictEqual(upsertArgs.update.durationSeconds, 50400, 'Must preserve existing duration in update');
     } finally {
       prisma.challenge.findFirst = originalChallenge;
+      prisma.challenge.findMany = originalChallengeFindMany;
       prisma.challengeParticipant.findMany = originalParticipants;
       prisma.dailyStudyLogV2.findMany = originalFindMany;
       prisma.dailyStudyLogV2.upsert = originalUpsert;
@@ -156,17 +167,27 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
     const originalFindMany = prisma.dailyStudyLogV2.findMany;
     const originalUpsert = prisma.dailyStudyLogV2.upsert;
     const originalChallenge = prisma.challenge.findFirst;
+    const originalChallengeFindMany = prisma.challenge.findMany;
     const originalParticipants = prisma.challengeParticipant.findMany;
 
     let upsertArgs = null;
 
     try {
-      prisma.challenge.findFirst = async () => ({
+      const mockChallenge = {
         id: 'mock-challenge-id',
         title: 'Mock Challenge',
         startAt: new Date('2026-10-05T00:00:00.000Z'),
         endAt: new Date('2026-10-12T00:00:00.000Z'),
-      });
+        resultsLockedAt: null,
+      };
+
+      prisma.challenge.findFirst = async () => mockChallenge;
+      prisma.challenge.findMany = async (args) => {
+        if (args?.where?.endAt?.lte) {
+          return [];
+        }
+        return [mockChallenge];
+      };
 
       prisma.challengeParticipant.findMany = async () => [
         {
@@ -212,6 +233,7 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
       assert.strictEqual(upsertArgs.update.durationSeconds, 26186, 'Must preserve existing duration in update');
     } finally {
       prisma.challenge.findFirst = originalChallenge;
+      prisma.challenge.findMany = originalChallengeFindMany;
       prisma.challengeParticipant.findMany = originalParticipants;
       prisma.dailyStudyLogV2.findMany = originalFindMany;
       prisma.dailyStudyLogV2.upsert = originalUpsert;
@@ -222,17 +244,27 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
     const originalFindMany = prisma.dailyStudyLogV2.findMany;
     const originalUpsert = prisma.dailyStudyLogV2.upsert;
     const originalChallenge = prisma.challenge.findFirst;
+    const originalChallengeFindMany = prisma.challenge.findMany;
     const originalParticipants = prisma.challengeParticipant.findMany;
 
     let upsertArgs = null;
 
     try {
-      prisma.challenge.findFirst = async () => ({
+      const mockChallenge = {
         id: 'mock-challenge-id',
         title: 'Mock Challenge',
         startAt: new Date('2026-10-05T00:00:00.000Z'),
         endAt: new Date('2026-10-12T00:00:00.000Z'),
-      });
+        resultsLockedAt: null,
+      };
+
+      prisma.challenge.findFirst = async () => mockChallenge;
+      prisma.challenge.findMany = async (args) => {
+        if (args?.where?.endAt?.lte) {
+          return [];
+        }
+        return [mockChallenge];
+      };
 
       prisma.challengeParticipant.findMany = async () => [
         {
@@ -279,6 +311,7 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
       assert.strictEqual(upsertArgs.update.status, 'STUDYING');
     } finally {
       prisma.challenge.findFirst = originalChallenge;
+      prisma.challenge.findMany = originalChallengeFindMany;
       prisma.challengeParticipant.findMany = originalParticipants;
       prisma.dailyStudyLogV2.findMany = originalFindMany;
       prisma.dailyStudyLogV2.upsert = originalUpsert;
