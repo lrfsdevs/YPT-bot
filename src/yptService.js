@@ -228,6 +228,9 @@ export async function getGroupMembers(token, groupId) {
       liveStudyMs = recordedStudyMs + sessionElapsedMs;
     }
 
+    const studyDate = dl.dt || dl.dd || null;
+    const lastActiveDate = dl.dd || null;
+
     return {
       userId: m.ud || m.userId || m.id,
       nickname: (m.n || m.name || m.nickname || 'Unknown').trim(),
@@ -235,6 +238,8 @@ export async function getGroupMembers(token, groupId) {
       isStudying,
       isPaused,
       currentSubject: isStudying ? (dl.sn || dl.sb || dl.tt || 'Studying') : null,
+      studyDate,
+      lastActiveDate,
       todayStudyMs: recordedStudyMs,
       todayStudyTime: formatMs(recordedStudyMs),
       liveStudyMs,
@@ -313,6 +318,12 @@ export async function getAggregatedMembers(token, groups) {
         if (member.todayStudyMs > existing.todayStudyMs) {
           existing.todayStudyMs = member.todayStudyMs;
           existing.todayStudyTime = member.todayStudyTime;
+          if (member.studyDate) existing.studyDate = member.studyDate;
+        } else if (!existing.studyDate && member.studyDate) {
+          existing.studyDate = member.studyDate;
+        }
+        if (!existing.lastActiveDate && member.lastActiveDate) {
+          existing.lastActiveDate = member.lastActiveDate;
         }
 
         // Propagate session telemetry (highest session elapsed wins)

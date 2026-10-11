@@ -95,13 +95,18 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
       id: true,
       participantId: true,
       isOverride: true,
+      durationSeconds: true,
     },
   });
   const existingMap = new Map(existingRecords.map((r) => [r.participantId, r]));
 
+  const targetLogDateStr = logDate.toISOString().slice(0, 10);
+
   let matchedCount = 0;
   let unlinkedCount = 0;
   let skippedOverrides = 0;
+  let protectedRollovers = 0;
+  let protectedZeroDrops = 0;
   let cappedCount = 0;
   let sessionCappedCount = 0;
   let upsertedCount = 0;
@@ -152,7 +157,23 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
       continue;
     }
 
-    // 5. Upsert DailyStudyLogV2
+    // 5. Zero-Drop & Rollover Glitch Guard
+    // - If YPT has already rolled over to a future day (member.studyDate > targetLogDateStr),
+    //   incoming telemetry belongs to tomorrow; preserve today's completed study duration.
+    // - If incoming duration is 0 but existing record has durationSeconds > 0, preserve existing duration.
+    const isFutureYptDate = Boolean(member.studyDate && member.studyDate > targetLogDateStr);
+    const isZeroDrop = Boolean(durationSeconds === 0 && existing && existing.durationSeconds > 0);
+
+    let finalDurationSeconds = durationSeconds;
+    if (isFutureYptDate && existing) {
+      finalDurationSeconds = existing.durationSeconds;
+      protectedRollovers++;
+    } else if (isZeroDrop) {
+      finalDurationSeconds = existing.durationSeconds;
+      protectedZeroDrops++;
+    }
+
+    // 6. Upsert DailyStudyLogV2
     upsertOperations.push(
       prisma.dailyStudyLogV2.upsert({
         where: {
@@ -164,12 +185,12 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
         create: {
           participantId: participant.participantId,
           logDate,
-          durationSeconds,
+          durationSeconds: finalDurationSeconds,
           status,
           isOverride: false,
         },
         update: {
-          durationSeconds,
+          durationSeconds: finalDurationSeconds,
           status,
         },
       })
@@ -189,6 +210,8 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
     matchedCount,
     upsertedCount,
     skippedOverrides,
+    protectedRollovers,
+    protectedZeroDrops,
     cappedCount,
     sessionCappedCount,
     unlinkedCount,
@@ -203,11 +226,35 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
     matchedCount,
     unlinkedCount,
     skippedOverrides,
+    protectedRollovers,
+    protectedZeroDrops,
     cappedCount,
     sessionCappedCount,
     upsertedCount,
     durationMs,
   };
+}
+
+let cachedToken = null;
+
+/**
+ * Resets cached auth token (used on 401 or auth failures and in tests)
+ */
+export function invalidateAuthToken() {
+  cachedToken = null;
+}
+
+/**
+ * Returns cached JWT session token or performs fresh signIn + splashLogin handshake
+ */
+export async function getOrRefreshAuthToken() {
+  if (cachedToken) {
+    return cachedToken;
+  }
+  const auth = await signIn(env.YPT_EMAIL, env.YPT_PASSWORD);
+  await splashLogin(auth.token);
+  cachedToken = auth.token;
+  return cachedToken;
 }
 
 /**
@@ -228,11 +275,23 @@ export async function runIngest() {
     throw new Error('YPT_GROUP_IDS must be configured in .env');
   }
 
-  const auth = await signIn(env.YPT_EMAIL, env.YPT_PASSWORD);
-  await splashLogin(auth.token);
-
+  let token = await getOrRefreshAuthToken();
   const groups = groupIds.map((id) => ({ id, name: `Group ${id}` }));
-  const aggregated = await getAggregatedMembers(auth.token, groups);
+  let aggregated;
+
+  try {
+    aggregated = await getAggregatedMembers(token, groups);
+  } catch (err) {
+    const isAuthError = err.message?.includes('401') || err.message?.includes('JWT') || err.message?.includes('session');
+    if (isAuthError) {
+      run.warn('Cached auth token expired or rejected. Refreshing session...', { error: err.message });
+      invalidateAuthToken();
+      token = await getOrRefreshAuthToken();
+      aggregated = await getAggregatedMembers(token, groups);
+    } else {
+      throw err;
+    }
+  }
 
   run.info('Fetched aggregated members.', {
     members: aggregated.members.length,

@@ -215,6 +215,7 @@ export async function syncChallengeFromMonday(options = {}) {
           select: {
             id: true,
             isOverride: true,
+            durationSeconds: true,
           },
         });
 
@@ -228,6 +229,17 @@ export async function syncChallengeFromMonday(options = {}) {
           continue;
         }
 
+        const todayUtcStr = formatUtcDateString(todayUtc);
+        const isFutureYptDate = Boolean(member.studyDate && member.studyDate > todayUtcStr);
+        const isZeroDrop = Boolean(durationSeconds === 0 && existingV2 && existingV2.durationSeconds > 0);
+
+        let finalDurationSeconds = durationSeconds;
+        if (isFutureYptDate && existingV2) {
+          finalDurationSeconds = existingV2.durationSeconds;
+        } else if (isZeroDrop) {
+          finalDurationSeconds = existingV2.durationSeconds;
+        }
+
         await prisma.dailyStudyLogV2.upsert({
           where: {
             participantId_logDate: {
@@ -238,12 +250,12 @@ export async function syncChallengeFromMonday(options = {}) {
           create: {
             participantId: participant.participantId,
             logDate: todayUtc,
-            durationSeconds,
+            durationSeconds: finalDurationSeconds,
             status,
             isOverride: false,
           },
           update: {
-            durationSeconds,
+            durationSeconds: finalDurationSeconds,
             status,
           },
         });

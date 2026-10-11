@@ -1,5 +1,38 @@
 # HANDOFF
 
+## 2026-10-12 — Zero-Drop & Rollover Glitch Protection + Auth Session Reuse
+
+### Context
+Incident: Bot set study time to 0 in first run, and in second run set it back to correct (intermittently flapping between `cappedCount: 0` and `cappedCount: 2/3`, wiping accumulated hours to 0:00:00 for active participants).
+
+Root Causes:
+1. **YPT Day Rollover Mismatch**: YPT groups roll over according to group start hour (e.g. 5:00 AM KST = 20:00 UTC, 8:00 AM KST = 23:00 UTC). When a group rolls over, `dl.dt` advances to the next date (e.g. `2026-10-12`) and `dl.sm` resets to `0`. However, the challenge day bucket in UTC (`computeChallengeDayLogDate`) remains on `2026-10-11` until 00:00:00Z. The bot previously ignored `dl.dt`, taking `todayStudyMs = 0` (tomorrow's counter) and blindly overwriting `durationSeconds` for `2026-10-11`.
+2. **Multi-Group Asymmetric Rollover**: Secondary groups (e.g. Group `7393477`) rolled over hours earlier than Group `6814572`. Members in the rolled-over group had `dl.sm = 0`.
+3. **Unconditional Upsert Without Zero-Drop Guard**: In `ingestGroupMembersToDailyStudyLogs` and `challenge_sync.js`, `update: { durationSeconds, status }` had no check if incoming `durationSeconds === 0` while the database already had accumulated hours (`existing.durationSeconds > 0`).
+4. **Auth Session Churn**: `runIngest()` issued fresh `signIn` + `splashLogin` handshakes on every 5-minute tick, causing load-balancer replica desync and cold session state returns.
+
+### What changed
+- **`src/yptService.js`**:
+  - `getGroupMembers`: extracts `studyDate` (`dl.dt || dl.dd || null`) and `lastActiveDate` (`dl.dd || null`) and includes them in returned member objects.
+  - `getAggregatedMembers`: propagates and preserves `studyDate` and `lastActiveDate` when consolidating members across multiple groups, ensuring the group with active study hours takes precedence.
+- **`src/sync/ingestStudyLogs.js`**:
+  - `ingestGroupMembersToDailyStudyLogs`: selects `durationSeconds` in `existingRecords`. Added two-tier protection:
+    - **Rollover Guard**: if `member.studyDate > targetLogDateStr`, incoming telemetry belongs to tomorrow; preserves `existing.durationSeconds` and increments `protectedRollovers`.
+    - **Zero-Drop Guard**: if incoming `durationSeconds === 0` while `existing.durationSeconds > 0`, preserves `existing.durationSeconds` and increments `protectedZeroDrops`.
+    - Updated structured logs and return summary to include `protectedRollovers` and `protectedZeroDrops`.
+  - `runIngest()` & Auth Session Reuse: introduced `cachedToken`, `getOrRefreshAuthToken()`, and `invalidateAuthToken()`. Avoids redundant logins every 5 minutes and auto-refreshes session if a 401/auth error occurs.
+- **`src/sync/challenge_sync.js`**:
+  - Phase 2 live ingestion selects `durationSeconds: true` and applies the same rollover and zero-drop protection before upserting into `DailyStudyLogV2`.
+- **`test/ingest-guards.test.js`**:
+  - Added 6 automated tests covering: `studyDate` extraction, multi-group `studyDate` preservation, rollover date protection, zero-drop protection, normal same-day progress updates, and session token caching/invalidation.
+
+### Verification
+- `CI_SKIP_DB=true npm test`: **38 pass / 0 fail** across 15 test suites.
+- `./scripts/check-schema-migration.sh`: **Passed**.
+- Verified against live YPT responses and audited database state.
+
+---
+
 ## 2026-10-11 — CI schema-migration guard + quality gates
 
 ### What changed
