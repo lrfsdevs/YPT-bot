@@ -53,6 +53,8 @@
     - Dynamic DB active query resolution and opt-in fallback behavior.
     - End-to-end ingestion simulation with mocked DB state.
     - `lockExpiredChallengesAfterGrace()` execution, system `AuditLog` creation, and idempotency.
+- **`package.json`**:
+  - Added `"postinstall": "prisma generate"` to ensure Prisma Client is automatically regenerated on every deployment (e.g. Render, CI, or local install), preventing missing field validation errors like `Unknown argument resultsLockedAt`.
 - **`doc.md`**:
   - Updated §6 with Challenge Lifecycle States, Day 7 grace rules, and auto-locking + AuditLog behavior.
   - Updated §8 with new test counts and coverage areas.

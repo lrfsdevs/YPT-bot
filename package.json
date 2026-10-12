@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "build": "prisma generate",
+    "postinstall": "prisma generate",
     "test": "LOG_SILENT=true node --test",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
