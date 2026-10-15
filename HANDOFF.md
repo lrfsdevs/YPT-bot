@@ -1,5 +1,64 @@
 # HANDOFF
 
+## 2026-10-15 — Ingest daemon polls from `POLL_INTERVAL_IDLE_SEC` (30s), flags removed
+
+### Context
+The `ingestStudyLogs.js` CLI had a hardcoded 5-**minute** loop driven by `--loop`/`--interval`
+flags, and the env var `POLL_INTERVAL_IDLE_SEC` was declared but read nowhere. Requested change:
+make the ingest command take its idle poll interval from env, and set that idle value to **30s**.
+
+### Entry point → call-chain (production path)
+- `npm run ingest` → `node src/sync/ingestStudyLogs.js` → CLI block → `setInterval(env.POLL_INTERVAL_IDLE_SEC * 1000)` → `runIngest()` → `ingestGroupMembersToDailyStudyLogs()`.
+- Also documented as the Render background-worker start command (`doc.md` Option 3).
+- `runIngest()` remains exported and unchanged for the Express path (`server.js`).
+
+### What changed
+- **`src/config/env.js`**: `POLL_INTERVAL_IDLE_SEC` fallback `300` → `30`.
+- **`.env`**: `POLL_INTERVAL_IDLE_SEC=300` → `30` (comment already said "seconds").
+- **`src/sync/ingestStudyLogs.js`**: removed `--loop`/`--interval` parsing and the
+  `intervalMinutes > 0` branch. The CLI block now always runs as a daemon at
+  `env.POLL_INTERVAL_IDLE_SEC`, logging `intervalSeconds` and exposing it on the
+  Render health JSON (`{ service: 'ingest-watch', intervalSeconds }`).
+- **`package.json`**: deleted the `ingest:watch` script; `ingest` is the single, flagless
+  command and now runs the env-driven daemon.
+- **`doc.md`**: Option 3 background worker start command is `npm run ingest` polling at
+  `POLL_INTERVAL_IDLE_SEC` (default 30s); added the var to the env list; removed the
+  `*/5 * * * *` one-shot cron line.
+
+### Behavior change (intended)
+The flagless one-shot mode (`npm run ingest` running once and exiting) is gone — the
+command is now always the daemon. Chosen deliberately per review ("no flag ... getting
+the time from env").
+
+### DB apply step
+- **No `prisma/schema.prisma` change → no migration needed.**
+
+### Verification
+- `CI_SKIP_DB=true npm test` → 56 pass / 1 fail; the only failure is the pre-existing,
+  untouched WIP `test/bot-logs.test.js` (imports a not-yet-existing `ingestOffSeasonTelemetry`
+  export). Locally the two DB suites (`getActiveChallenge Resolution & Fallback Behavior (DB)`,
+  `syncChallengeFromMonday`) also fail without a running Postgres — both pre-existing and
+  unrelated to this change. This change touches no exported function those suites use.
+- `grep -n -- '--interval\|--loop' src/sync/ingestStudyLogs.js` → no matches.
+- `grep -rn 'ingest:watch' src package.json doc.md` → no live references (only this
+  HANDOFF history and taste notes mention the removed script).
+- `env.POLL_INTERVAL_IDLE_SEC` resolves to `30` from both `.env` and the `env.js` fallback.
+
+### Open items / follow-ups (unused "lying" env vars — NOT changed)
+Declared but read nowhere in `src/`:
+- `POLL_INTERVAL_ACTIVE_SEC` (`.env:17` only) — unused; note it inverts the usual
+  "poll less when idle" intent vs the new 30s idle value.
+- `STALE_STUDY_TIMEOUT_MINUTES` (`.env`, `env.js`) — unused.
+- `TIMEZONE` (`.env`, `env.js`) — unused.
+- `DAY_ROLLOVER_HOUR` (`.env`, `env.js`) — unused.
+- `DISCORD_WEBHOOK_URL` (`.env` only) — unused.
+- `ALERT_FAILURE_THRESHOLD` (`.env` only) — unused.
+- `API_SECRET` (`.env` only) — unused (no auth middleware consumes it).
+- SPOC bypass: `src/server.js:365` reads `process.env.REFRESH_INTERVAL_MINUTES` directly,
+  and that var is defined nowhere in `.env`/`env.js`. Not moved into `env.js` yet.
+
+---
+
 ## 2026-10-12 — Challenge Lifecycle, Day 7 Grace Window, 6hr Auto-Locking, and Zero-Drop/Rollover Glitch Protection
 
 ### Context & Incident Resolution

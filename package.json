@@ -14,7 +14,6 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "ingest": "node src/sync/ingestStudyLogs.js",
-    "ingest:watch": "node src/sync/ingestStudyLogs.js --interval 5",
     "challenge_sync": "node src/sync/challenge_sync.js"
   },
   "dependencies": {

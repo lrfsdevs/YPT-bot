@@ -396,40 +396,29 @@ export async function runIngest() {
   return result;
 }
 
-// Auto-run when executed directly via CLI
+// Auto-run when executed directly via CLI (daemon mode; interval from env)
 const isDirectExecution = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isDirectExecution) {
-  const args = process.argv.slice(2);
-  const loopArgIndex = args.findIndex((a) => a === '--loop' || a === '--interval');
-  const intervalMinutes = loopArgIndex !== -1 ? parseInt(args[loopArgIndex + 1], 10) || 5 : 0;
+  const intervalSeconds = env.POLL_INTERVAL_IDLE_SEC;
 
-  if (intervalMinutes > 0) {
-    logger.info('Ingest daemon started.', { intervalMinutes });
+  logger.info('Ingest daemon started.', { intervalSeconds });
 
-    // If deployed on Render Web Service (which requires an open HTTP port)
-    if (process.env.PORT) {
-      import('node:http').then(({ createServer }) => {
-        const port = Number(process.env.PORT) || 3000;
-        const server = createServer((req, res) => {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'ok', service: 'ingest-watch', intervalMinutes }));
-        });
-        server.listen(port, '0.0.0.0', () => {
-          logger.info('Health server listening (Render compatible).', { host: '0.0.0.0', port });
-        });
+  // If deployed on Render Web Service (which requires an open HTTP port)
+  if (process.env.PORT) {
+    import('node:http').then(({ createServer }) => {
+      const port = Number(process.env.PORT) || 3000;
+      const server = createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', service: 'ingest-watch', intervalSeconds }));
       });
-    }
-
-    runIngest().catch((e) => logger.error('Ingest error', e));
-    setInterval(() => {
-      runIngest().catch((e) => logger.error('Ingest error', e));
-    }, intervalMinutes * 60 * 1000);
-  } else {
-    runIngest()
-      .then(() => process.exit(0))
-      .catch((err) => {
-        logger.error('Fatal error in runIngest', err);
-        process.exit(1);
+      server.listen(port, '0.0.0.0', () => {
+        logger.info('Health server listening (Render compatible).', { host: '0.0.0.0', port });
       });
+    });
   }
+
+  runIngest().catch((e) => logger.error('Ingest error', e));
+  setInterval(() => {
+    runIngest().catch((e) => logger.error('Ingest error', e));
+  }, intervalSeconds * 1000);
 }

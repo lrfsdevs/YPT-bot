@@ -274,9 +274,10 @@ The repository is configured for turnkey deployment on [Render](https://render.c
    - `YPT_PASSWORD`: Your YPT account password
    - `YPT_GROUP_IDS`: `6814572,7393477`
    - `REFRESH_INTERVAL_MINUTES`: `5` (runs ingestion every 5 minutes)
+   - `POLL_INTERVAL_IDLE_SEC`: `30` (ingest daemon poll interval, in seconds)
    - `NODE_ENV`: `production`
 
 ### Option 3: Headless Background Worker or Cron Job
-- **Background Worker**: Set Start Command to `npm run ingest:watch`.
-- **Render Cron Job**: Set Schedule to `*/5 * * * *` and Command to `npm run ingest`.
+- **Background Worker**: Set Start Command to `npm run ingest`. It runs continuously and
+  polls at the interval configured by `POLL_INTERVAL_IDLE_SEC` (seconds, default `30`).
 
