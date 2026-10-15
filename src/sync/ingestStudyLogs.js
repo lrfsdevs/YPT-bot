@@ -74,28 +74,15 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
   // 0. Auto-lock any challenges whose 6-hour grace window has expired
   await lockExpiredChallengesAfterGrace(nowUtc, log);
 
-  // 1. Resolve Active Challenge in UTC
-  const challenge = await getActiveChallenge(nowUtc);
+  // 1. Resolve the anchor challenge in UTC. The cron is challenge-window independent:
+  //    locked/ended challenges still anchor telemetry via fallback. No challenge at all
+  //    means there is no participant to key rows to, so fail loudly.
+  const challenge = await getActiveChallenge(nowUtc, { allowFallback: true });
   if (!challenge) {
-    log.warn('No challenge is active in database. Ingestion skipped.');
-    return {
-      success: false,
-      reason: 'NO_ACTIVE_CHALLENGE',
-      matchedCount: 0,
-      upsertedCount: 0,
-    };
+    throw new Error('No challenge available to anchor study telemetry');
   }
 
   const lifecycle = challenge.lifecycle || getChallengeLifecycle(challenge, nowUtc);
-  if (!lifecycle.canIngest) {
-    log.warn(`Challenge "${challenge.title}" cannot be ingested (state: ${lifecycle.state}). Ingestion skipped.`);
-    return {
-      success: false,
-      reason: `CHALLENGE_${lifecycle.state}`,
-      matchedCount: 0,
-      upsertedCount: 0,
-    };
-  }
 
   // Challenge-anchored day bucket (derived from challenge start in UTC)
   // During Day 7 grace period, lock target bucket to Day 7 (1 second prior to day7End)
@@ -108,7 +95,7 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
 
   // 3. Pre-fetch existing logs for today in a single query to eliminate N+1 roundtrips
   const participantIds = Array.from(participantMap.values()).map((p) => p.participantId);
-  const existingRecords = await prisma.dailyStudyLogV2.findMany({
+  const existingRecords = await prisma.dailyStudyLog.findMany({
     where: {
       logDate,
       participantId: { in: participantIds },
@@ -214,7 +201,7 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
       skippedOverrides++;
       // Still update live status without touching durationSeconds
       upsertOperations.push(
-        prisma.dailyStudyLogV2.update({
+        prisma.dailyStudyLog.update({
           where: { id: existing.id },
           data: { status },
         })
@@ -239,9 +226,9 @@ export async function ingestGroupMembersToDailyStudyLogs(groupId, members, nowUt
       protectedZeroDrops++;
     }
 
-    // 6. Upsert DailyStudyLogV2
+    // 6. Upsert DailyStudyLog
     upsertOperations.push(
-      prisma.dailyStudyLogV2.upsert({
+      prisma.dailyStudyLog.upsert({
         where: {
           participantId_logDate: {
             participantId: participant.participantId,
@@ -331,32 +318,6 @@ export async function runIngest() {
   const start = Date.now();
   const run = logger.child({ runId: randomUUID(), trigger: 'runIngest' });
   run.info('Running YPT study logs ingestion...');
-
-  // Auto-lock any challenges whose 6-hour grace window has expired
-  await lockExpiredChallengesAfterGrace(new Date(), run);
-
-  // Early check: if no challenge is running or eligible, skip YPT login and scraping
-  const challenge = await getActiveChallenge();
-  if (!challenge) {
-    run.warn('No challenge is active in database. Ingestion skipped.');
-    return {
-      success: false,
-      reason: 'NO_ACTIVE_CHALLENGE',
-      matchedCount: 0,
-      upsertedCount: 0,
-    };
-  }
-
-  const lifecycle = challenge.lifecycle || getChallengeLifecycle(challenge);
-  if (!lifecycle.canIngest) {
-    run.warn(`Challenge "${challenge.title}" cannot be ingested (state: ${lifecycle.state}). Ingestion skipped.`);
-    return {
-      success: false,
-      reason: `CHALLENGE_${lifecycle.state}`,
-      matchedCount: 0,
-      upsertedCount: 0,
-    };
-  }
 
   if (!env.YPT_EMAIL || !env.YPT_PASSWORD) {
     throw new Error('YPT_EMAIL and YPT_PASSWORD must be configured in .env');

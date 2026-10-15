@@ -174,6 +174,7 @@ model DailyStudyLog {
   participantId   String
   logDate         DateTime @db.Date
   durationSeconds Int      @default(0)
+  status          String?  @db.VarChar(32)
   isLeave         Boolean  @default(false)
 
   isOverride     Boolean @default(false)

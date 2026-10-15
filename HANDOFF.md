@@ -1,5 +1,69 @@
 # HANDOFF
 
+## 2026-10-15 — Challenge-independent ingest: always log telemetry to `DailyStudyLog`
+
+### Context
+The ingest cron used to gate on the challenge lifecycle: when the challenge was locked,
+ended, or upcoming it did **not** write study rows (`NO_ACTIVE_CHALLENGE` /
+`CHALLENGE_<state>` early returns). Requested change: keep logging study telemetry into the
+daily study log table even when the challenge is locked/ended — the challenge validity
+"checks" move to the server (read side). Target table also moves from `DailyStudyLogV2`
+(`study_logs_v2`) to `DailyStudyLog`.
+
+### Entry point → call-chain (production path)
+- `npm run ingest` → `src/sync/ingestStudyLogs.js` → `runIngest()` → `getAggregatedMembers()` (always scrape) → `ingestGroupMembersToDailyStudyLogs()` → `DailyStudyLog` upserts.
+- `POST /sync` (`src/server.js`) → same `ingestGroupMembersToDailyStudyLogs()`.
+
+### What changed
+- **`src/sync/ingestStudyLogs.js`**:
+  - `runIngest()`: removed the early `getActiveChallenge()` gate (no more `NO_ACTIVE_CHALLENGE` / `CHALLENGE_<state>` short-circuit); always scrapes and ingests.
+  - `ingestGroupMembersToDailyStudyLogs()`: resolves the anchor challenge with
+    `getActiveChallenge(nowUtc, { allowFallback: true })` so ended/locked challenges still
+    anchor telemetry; **throws `No challenge available to anchor study telemetry`** when no
+    challenge exists at all; removed the `!lifecycle.canIngest` gate (always logs). Day-7
+    grace + rollover/zero-drop/override logic unchanged.
+  - Write target switched `prisma.dailyStudyLogV2` → `prisma.dailyStudyLog` (prefetch
+    `findMany`, `upsert`, override `update`).
+- **`prisma/schema.prisma`**: added `status String? @db.VarChar(32)` to `model DailyStudyLog`
+  (carried over from `DailyStudyLogV2`, which the ingest reads/writes and the Day-7 grace
+  logic depends on).
+- **`test/challenge-lifecycle.test.js`**: replaced "skips ingestion when locked" with
+  "still logs study telemetry when the challenge is locked"; replaced the runIngest
+  early-exit test with a scrape + fail-loudly test; swapped `dailyStudyLogV2` mocks →
+  `dailyStudyLog`.
+- **`test/ingest-guards.test.js`**: swapped `dailyStudyLogV2` mocks → `dailyStudyLog`.
+- **`doc.md`**: updated ingest section + lifecycle section (states no longer gate ingestion)
+  and the override/day-bucket references to `DailyStudyLog`.
+
+### Behavior change (intended)
+- The cron no longer stops logging when a challenge is locked/ended/upcoming — it keeps
+  writing day telemetry to `DailyStudyLog`. A genuinely absent challenge now throws (loud)
+  instead of silently skipping.
+
+### DB apply step
+- New migration `prisma/migrations/20261015090000_add_status_to_daily_study_log/migration.sql`:
+  `ALTER TABLE "DailyStudyLog" ADD COLUMN IF NOT EXISTS "status" VARCHAR(32);` (idempotent).
+- Apply with `prisma migrate deploy` (or the raw SQL where the column is missing). Nothing in
+  the build pipeline syncs the schema — apply manually.
+
+### Verification
+- `CI_SKIP_DB=true npm test` → 56 pass / 1 fail; the only failure is the pre-existing,
+  untouched WIP `test/bot-logs.test.js` (out of scope). The two `(DB)` subtests in
+  `challenge-lifecycle` require a live Postgres and are unrelated.
+- `CI_SKIP_DB=true node --test test/challenge-lifecycle.test.js test/ingest-guards.test.js test/ingest-utc.test.js` → 34 pass / 0 fail.
+- `npx prisma generate` succeeds with the new `status` column.
+
+### Open items / follow-ups
+- Server read endpoints (`GET /logs/*`) and the challenge validity "checks on the server"
+  are still pending.
+- The `YptBotLog` telemetry WIP (`src/db/botLogService.js`, `test/bot-logs.test.js`, the
+  `ypt_bot_logs` migration) is untouched and still has no `YptBotLog` model in
+  `prisma/schema.prisma`.
+- `src/sync/challenge_sync.js` still writes `DailyStudyLogV2`; folding it into the
+  V2→DailyStudyLog move is a separate step.
+
+---
+
 ## 2026-10-15 — Ingest daemon polls from `POLL_INTERVAL_IDLE_SEC` (30s), flags removed
 
 ### Context

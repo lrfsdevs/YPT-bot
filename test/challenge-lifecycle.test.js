@@ -287,9 +287,9 @@ describe('ingestGroupMembersToDailyStudyLogs End-to-End Simulation (Mocked DB)',
     const origChallengeFindMany = prisma.challenge.findMany;
     const origChallengeUpdateMany = prisma.challenge.updateMany;
     const origParticipantFindMany = prisma.challengeParticipant.findMany;
-    const origLogFindMany = prisma.dailyStudyLogV2.findMany;
-    const origLogUpsert = prisma.dailyStudyLogV2.upsert;
-    const origLogUpdate = prisma.dailyStudyLogV2.update;
+    const origLogFindMany = prisma.dailyStudyLog.findMany;
+    const origLogUpsert = prisma.dailyStudyLog.upsert;
+    const origLogUpdate = prisma.dailyStudyLog.update;
 
     const upsertCalls = [];
     const updateCalls = [];
@@ -301,7 +301,7 @@ describe('ingestGroupMembersToDailyStudyLogs End-to-End Simulation (Mocked DB)',
     };
     prisma.challenge.updateMany = async () => ({ count: 0 });
     prisma.challengeParticipant.findMany = async () => mockParticipants;
-    prisma.dailyStudyLogV2.findMany = async ({ where }) => {
+    prisma.dailyStudyLog.findMany = async ({ where }) => {
       // Assert that query logDate is Day 7 (2026-10-11), NOT Day 8 (2026-10-12)
       assert.strictEqual(where.logDate.toISOString().slice(0, 10), '2026-10-11');
       return [
@@ -311,11 +311,11 @@ describe('ingestGroupMembersToDailyStudyLogs End-to-End Simulation (Mocked DB)',
         { id: 'log-diana', participantId: 'cp-diana', durationSeconds: 10000, status: 'OFFLINE', isOverride: true },
       ];
     };
-    prisma.dailyStudyLogV2.upsert = async (args) => {
+    prisma.dailyStudyLog.upsert = async (args) => {
       upsertCalls.push(args);
       return args;
     };
-    prisma.dailyStudyLogV2.update = async (args) => {
+    prisma.dailyStudyLog.update = async (args) => {
       updateCalls.push(args);
       return args;
     };
@@ -397,22 +397,39 @@ describe('ingestGroupMembersToDailyStudyLogs End-to-End Simulation (Mocked DB)',
       prisma.challenge.findMany = origChallengeFindMany;
       prisma.challenge.updateMany = origChallengeUpdateMany;
       prisma.challengeParticipant.findMany = origParticipantFindMany;
-      prisma.dailyStudyLogV2.findMany = origLogFindMany;
-      prisma.dailyStudyLogV2.upsert = origLogUpsert;
-      prisma.dailyStudyLogV2.update = origLogUpdate;
+      prisma.dailyStudyLog.findMany = origLogFindMany;
+      prisma.dailyStudyLog.upsert = origLogUpsert;
+      prisma.dailyStudyLog.update = origLogUpdate;
     }
   });
 
-  test('skips ingestion when challenge is locked even during active dates', async () => {
+  test('still logs study telemetry when the challenge is locked (no longer skips)', async () => {
     const lockedChallenge = {
       ...mockChallenge,
       resultsLockedAt: new Date('2026-10-11T17:00:00.000Z'),
     };
 
     const origChallengeFindMany = prisma.challenge.findMany;
+    const origChallengeFindFirst = prisma.challenge.findFirst;
     const origChallengeUpdateMany = prisma.challenge.updateMany;
-    prisma.challenge.findMany = async () => [lockedChallenge];
+    const origParticipantFindMany = prisma.challengeParticipant.findMany;
+    const origLogFindMany = prisma.dailyStudyLog.findMany;
+    const origLogUpsert = prisma.dailyStudyLog.upsert;
+
+    let upsertArgs = null;
+
+    prisma.challenge.findMany = async ({ where } = {}) => {
+      if (where?.endAt?.lte) return [];
+      return [lockedChallenge];
+    };
+    prisma.challenge.findFirst = async () => lockedChallenge;
     prisma.challenge.updateMany = async () => ({ count: 0 });
+    prisma.challengeParticipant.findMany = async () => [mockParticipants[0]];
+    prisma.dailyStudyLog.findMany = async () => [];
+    prisma.dailyStudyLog.upsert = async (args) => {
+      upsertArgs = args;
+      return args;
+    };
 
     try {
       const silentLogger = {
@@ -423,29 +440,55 @@ describe('ingestGroupMembersToDailyStudyLogs End-to-End Simulation (Mocked DB)',
       };
 
       const now = new Date('2026-10-11T17:30:00.000Z');
-      const result = await ingestGroupMembersToDailyStudyLogs('test-group', [], now, silentLogger);
+      const members = [
+        { userId: 'ypt-alice', isStudying: true, todayStudyMs: 3600 * 1000, sessionElapsedMs: 0 },
+      ];
+      const result = await ingestGroupMembersToDailyStudyLogs('test-group', members, now, silentLogger);
 
-      assert.strictEqual(result.success, false);
-      assert.ok(result.reason.includes('NO_ACTIVE_CHALLENGE') || result.reason.includes('LOCKED'));
-      assert.strictEqual(result.upsertedCount, 0);
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.upsertedCount, 1, 'Locked challenge must still receive study telemetry');
+      assert.ok(upsertArgs);
+      assert.strictEqual(upsertArgs.create.participantId, 'cp-alice');
     } finally {
       prisma.challenge.findMany = origChallengeFindMany;
+      prisma.challenge.findFirst = origChallengeFindFirst;
       prisma.challenge.updateMany = origChallengeUpdateMany;
+      prisma.challengeParticipant.findMany = origParticipantFindMany;
+      prisma.dailyStudyLog.findMany = origLogFindMany;
+      prisma.dailyStudyLog.upsert = origLogUpsert;
     }
   });
 
-  test('runIngest exits early without YPT network calls when no challenge is active', async () => {
+  test('runIngest scrapes and fails loudly when no challenge exists', async () => {
+    const origFetch = globalThis.fetch;
     const origChallengeFindMany = prisma.challenge.findMany;
+    const origChallengeFindFirst = prisma.challenge.findFirst;
+
     prisma.challenge.findMany = async () => [];
+    prisma.challenge.findFirst = async () => null;
+
+    globalThis.fetch = async (url) => {
+      if (url.includes('/user/sign-in-jwt')) {
+        return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ s: true, jwt: 'tok' }) };
+      }
+      if (url.includes('/user/v2/splash-login')) {
+        return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ s: true }) };
+      }
+      if (url.includes('/logs/group/members/v2')) {
+        return { ok: true, status: 200, headers: { get: () => 'application/json' }, json: async () => ({ s: true, ms: [{ ud: 1001, n: 'Alice', dl: { sm: 3600000 } }] }) };
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    };
 
     try {
-      const result = await runIngest();
-      assert.strictEqual(result.success, false);
-      assert.strictEqual(result.reason, 'NO_ACTIVE_CHALLENGE');
-      assert.strictEqual(result.matchedCount, 0);
-      assert.strictEqual(result.upsertedCount, 0);
+      await assert.rejects(
+        () => runIngest(),
+        /No challenge available to anchor study telemetry/
+      );
     } finally {
+      globalThis.fetch = origFetch;
       prisma.challenge.findMany = origChallengeFindMany;
+      prisma.challenge.findFirst = origChallengeFindFirst;
     }
   });
 });

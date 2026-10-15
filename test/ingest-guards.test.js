@@ -86,8 +86,8 @@ describe('YPT studyDate extraction and aggregation', () => {
 describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLogs', () => {
   it('guards against overwriting completed day when YPT member has already rolled over to next date', async () => {
     // Mock prisma dependencies
-    const originalFindMany = prisma.dailyStudyLogV2.findMany;
-    const originalUpsert = prisma.dailyStudyLogV2.upsert;
+    const originalFindMany = prisma.dailyStudyLog.findMany;
+    const originalUpsert = prisma.dailyStudyLog.upsert;
     const originalChallenge = prisma.challenge.findFirst;
     const originalChallengeFindMany = prisma.challenge.findMany;
     const originalParticipants = prisma.challengeParticipant.findMany;
@@ -121,7 +121,7 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
       ];
 
       // Existing DB record for today (2026-10-11) has 50400s (14h)
-      prisma.dailyStudyLogV2.findMany = async () => [
+      prisma.dailyStudyLog.findMany = async () => [
         {
           id: 'log-1',
           participantId: 'participant-1',
@@ -130,7 +130,7 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
         },
       ];
 
-      prisma.dailyStudyLogV2.upsert = async (args) => {
+      prisma.dailyStudyLog.upsert = async (args) => {
         upsertArgs = args;
         return args;
       };
@@ -158,14 +158,14 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
       prisma.challenge.findFirst = originalChallenge;
       prisma.challenge.findMany = originalChallengeFindMany;
       prisma.challengeParticipant.findMany = originalParticipants;
-      prisma.dailyStudyLogV2.findMany = originalFindMany;
-      prisma.dailyStudyLogV2.upsert = originalUpsert;
+      prisma.dailyStudyLog.findMany = originalFindMany;
+      prisma.dailyStudyLog.upsert = originalUpsert;
     }
   });
 
   it('guards against zero-drop wipeout when incoming studyMs is 0 but existing record > 0', async () => {
-    const originalFindMany = prisma.dailyStudyLogV2.findMany;
-    const originalUpsert = prisma.dailyStudyLogV2.upsert;
+    const originalFindMany = prisma.dailyStudyLog.findMany;
+    const originalUpsert = prisma.dailyStudyLog.upsert;
     const originalChallenge = prisma.challenge.findFirst;
     const originalChallengeFindMany = prisma.challenge.findMany;
     const originalParticipants = prisma.challengeParticipant.findMany;
@@ -199,7 +199,7 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
       ];
 
       // Existing DB record has 26186s (~7.2h)
-      prisma.dailyStudyLogV2.findMany = async () => [
+      prisma.dailyStudyLog.findMany = async () => [
         {
           id: 'log-1',
           participantId: 'participant-1',
@@ -208,7 +208,7 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
         },
       ];
 
-      prisma.dailyStudyLogV2.upsert = async (args) => {
+      prisma.dailyStudyLog.upsert = async (args) => {
         upsertArgs = args;
         return args;
       };
@@ -235,14 +235,14 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
       prisma.challenge.findFirst = originalChallenge;
       prisma.challenge.findMany = originalChallengeFindMany;
       prisma.challengeParticipant.findMany = originalParticipants;
-      prisma.dailyStudyLogV2.findMany = originalFindMany;
-      prisma.dailyStudyLogV2.upsert = originalUpsert;
+      prisma.dailyStudyLog.findMany = originalFindMany;
+      prisma.dailyStudyLog.upsert = originalUpsert;
     }
   });
 
   it('allows normal progress update when duration increases or adjusts within same day', async () => {
-    const originalFindMany = prisma.dailyStudyLogV2.findMany;
-    const originalUpsert = prisma.dailyStudyLogV2.upsert;
+    const originalFindMany = prisma.dailyStudyLog.findMany;
+    const originalUpsert = prisma.dailyStudyLog.upsert;
     const originalChallenge = prisma.challenge.findFirst;
     const originalChallengeFindMany = prisma.challenge.findMany;
     const originalParticipants = prisma.challengeParticipant.findMany;
@@ -275,7 +275,7 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
         },
       ];
 
-      prisma.dailyStudyLogV2.findMany = async () => [
+      prisma.dailyStudyLog.findMany = async () => [
         {
           id: 'log-1',
           participantId: 'participant-1',
@@ -284,7 +284,7 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
         },
       ];
 
-      prisma.dailyStudyLogV2.upsert = async (args) => {
+      prisma.dailyStudyLog.upsert = async (args) => {
         upsertArgs = args;
         return args;
       };
@@ -313,8 +313,8 @@ describe('Zero-Drop & Rollover Glitch Guards in ingestGroupMembersToDailyStudyLo
       prisma.challenge.findFirst = originalChallenge;
       prisma.challenge.findMany = originalChallengeFindMany;
       prisma.challengeParticipant.findMany = originalParticipants;
-      prisma.dailyStudyLogV2.findMany = originalFindMany;
-      prisma.dailyStudyLogV2.upsert = originalUpsert;
+      prisma.dailyStudyLog.findMany = originalFindMany;
+      prisma.dailyStudyLog.upsert = originalUpsert;
     }
   });
 });

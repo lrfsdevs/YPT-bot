@@ -49,7 +49,7 @@ It solves three primary challenges:
   │   ├── db/
   │   │   └── challengeService.js # UTC active challenge and participant map queries
   │   ├── sync/
-  │   │   ├── ingestStudyLogs.js  # Live YPT telemetry ingestion into DailyStudyLogV2
+  │   │   ├── ingestStudyLogs.js  # Live YPT telemetry ingestion into DailyStudyLog
   │   │   └── challenge_sync.js   # Monday-to-today ingestion & historical sync pipeline
   │   ├── server.js             # Express REST API & scheduled background sync
   │   └── yptService.js         # YPT API client (auth, group telemetry, multi-group aggregation)
@@ -141,11 +141,19 @@ npm run challenge_sync
 ---
 
 ### B. Live Study Log Ingestion (`ingest`)
-Performs a live scrape of today's study telemetry and writes directly to `DailyStudyLogV2`:
+Performs a live scrape of study telemetry and writes directly to the daily study log table
+`DailyStudyLog`:
 
 ```bash
 npm run ingest
 ```
+
+The cron is **challenge-window independent**: it no longer skips when the challenge is
+locked, ended, or outside its active window. It keeps scraping and logging study telemetry
+into the table, and only needs a resolvable challenge to anchor participants (an ended/locked
+challenge is resolved via fallback). If **no** challenge exists at all, it fails loudly
+(there is no `ChallengeParticipant` to key rows to). The challenge validity "checks" — what
+counts for a challenge — belong to the server on the read side.
 
 Also exposed via REST API endpoint:
 ```bash
@@ -176,7 +184,7 @@ npm start
 | `GET` | `/members` | Unified and deduplicated members across all joined groups. |
 | `GET` | `/groups` | List all joined groups. Supports `?q=<keyword>` and `?refresh=true`. |
 | `GET` | `/groups/:groupId/members` | Live telemetry for members of a specific group. |
-| `POST` | `/sync` | Trigger an immediate live YPT scrape and database ingestion into `study_logs_v2`. |
+| `POST` | `/sync` | Trigger an immediate live YPT scrape and database ingestion into `DailyStudyLog`. |
 
 ---
 
@@ -184,15 +192,16 @@ npm start
 
 To prevent timezone drift and misalignment across international participants:
 - All challenge queries evaluate in strict UTC time using `getChallengeLifecycle(challenge, nowUtc)`.
-- **Challenge Lifecycle States**:
-  - `LOCKED`: When `resultsLockedAt` is set on the `Challenge` and has passed, logging is immediately prohibited across all entry points.
-  - `UPCOMING`: Before `startAt`, ingestion is prohibited.
-  - `ACTIVE`: During `[startAt, endAt]` and while not locked, real-time ingestion occurs every 5 minutes.
+- **Challenge Lifecycle States** (no longer gate ingestion — the cron always logs; state only affects day bucketing):
+  - `LOCKED`: `resultsLockedAt` is set on the `Challenge` and has passed.
+  - `UPCOMING`: Before `startAt`.
+  - `ACTIVE`: During `[startAt, endAt]` while not locked.
   - `DAY7_GRACE`: A 6-hour grace window spanning `(endAt, endAt + 6h]` following Day 7 completion (unless locked earlier):
     - Target bucket is locked to **Day 7** (`computeChallengeDayLogDate(day7End - 1000, challenge.startAt)`).
     - **Old Sessions Allowed**: In-progress sessions that began before Day 7 completion (`sessionStartMs < day7End`) continue to accumulate and finalize upon going offline.
     - **New Sessions Rejected**: Any session started on or after Day 7 completion (`sessionStartMs >= day7End`) is ignored and will not increase Day 7 study duration (status marked `OFFLINE`).
-  - `EXPIRED`: Past `endAt + 6h`, all automated ingestion stops.
+  - `EXPIRED`: Past `endAt + 6h`.
+- `ingestGroupMembersToDailyStudyLogs` no longer bails on a non-ingestable state: it always writes day telemetry to `DailyStudyLog`, resolving ended/locked challenges via `getActiveChallenge(nowUtc, { allowFallback: true })`, and throws when no challenge exists at all.
 - **Automatic Challenge Locking & Audit Log**:
   - `lockExpiredChallengesAfterGrace(nowUtc, log)` runs automatically at the beginning of ingestion cycles (`runIngest`, `ingestGroupMembersToDailyStudyLogs`, and `getActiveChallenge`).
   - Any challenge past `endAt + 6h` with `resultsLockedAt == null` is atomically locked (`resultsLockedAt = nowUtc`).
@@ -205,7 +214,7 @@ To prevent timezone drift and misalignment across international participants:
   - Atomic conditional updates ensure idempotency across concurrent sync executions.
 - Day buckets are **challenge-anchored**: a challenge day is derived from `Challenge.startAt` in UTC.
   Day *N* spans `[startAt + N·24h, startAt + (N+1)·24h)`, and `logDate` is the UTC midnight of that
-  day's start (the `study_logs_v2.logDate` column is `@db.Date`):
+  day's start (the `DailyStudyLog.logDate` column is `@db.Date`):
   ```js
   // computeChallengeDayLogDate(nowUtc, challenge.startAt)
   const dayIndex = Math.max(0, Math.floor((nowUtc - startAt) / (24 * 60 * 60 * 1000)));
@@ -221,7 +230,7 @@ To prevent timezone drift and misalignment across international participants:
 ## 7. Admin Override Protection (Law L5)
 
 Platform administrators may manually adjust study hours or grant leaves through the frontend dashboard:
-- When `isOverride: true` is set on a `DailyStudyLogV2` record, automated YPT syncs and historical backfills **will never overwrite** `durationSeconds`.
+- When `isOverride: true` is set on a `DailyStudyLog` record, automated YPT syncs and historical backfills **will never overwrite** `durationSeconds`.
 - For live records, live status (e.g. `"STUDYING"`) continues to update so dashboards show real-time activity while preserving the adjusted study duration.
 
 ---
